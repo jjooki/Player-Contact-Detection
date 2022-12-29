@@ -3,6 +3,7 @@
 
 ### dataset directory ###
 data/
+tutorial/
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks
