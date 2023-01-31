@@ -280,9 +280,12 @@ class Ensemble:
         return getattr(self.final_ensemble, 'predict')(X_test)
 
     def score(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        if self.metric_.contains('_f1_score'):
+        if '_f1_score' in self.metric_:
             avg = self.metric_.split('_')[0]
-            return self.metric_dict[self.type_][self.metric_](y_true, y_pred, average=avg)
+            try:
+                return self.metric_dict[self.type_][self.metric_](y_true, y_pred, average=avg)
+            except:
+                return self.metric_dict[self.type_][self.metric_](y_true, y_pred)
         elif self.metric_ in ['rmse', 'rmsle']:
             return self.metric_dict[self.type_][self.metric_[1:]](y_true, y_pred, squared=False)
         else:
