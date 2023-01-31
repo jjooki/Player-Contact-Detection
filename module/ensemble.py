@@ -416,6 +416,9 @@ class BinaryCalssifier(Ensemble):
                          early_stopping_rounds,
                          optimize, n_trials,
                          cv, N, **kwargs)
+        
+    def __str__(self):
+        return 'Binary Classifier'
 
 class Regressor(Ensemble):
     # Child Class
@@ -441,3 +444,6 @@ class Regressor(Ensemble):
                          early_stopping_rounds,
                          optimize, n_trials,
                          cv, N, **kwargs)
+        
+    def __str__(self):
+        return 'Regressor'
