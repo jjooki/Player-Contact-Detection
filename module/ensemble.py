@@ -16,6 +16,7 @@ optuna             2.10.1
 import pandas as pd
 import numpy as np
 from typing import Optional, Union, List
+from tqdm import tqdm
 import copy
 import warnings
 warnings.filterwarnings(action='ignore')
@@ -59,6 +60,7 @@ class Ensemble:
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
+                 verbose: int=0,
                  n_trials: int=20,
                  cv: int=5,
                  N: int=5,
@@ -83,6 +85,7 @@ class Ensemble:
         self.random_state = random_state
         self.early_stopping_rounds = early_stopping_rounds
         self.optimize_ = optimize
+        self.verbose_ = verbose
         self.n_trials_ = n_trials
         self.cv_ = cv
         self.N_ = N
@@ -203,6 +206,7 @@ class Ensemble:
                     k = N-i-j
                     temp = [i/N, j/N, k/N]
                     weights.append(temp)
+        
         elif n_learners == 2:
             for i in range(N+1):
                 j = N-i
@@ -219,13 +223,13 @@ class Ensemble:
                   y_val: Optional[Union[pd.Series, pd.DataFrame, np.ndarray]]) -> None:
             
             if learner == 'rf':
-                getattr(model, 'fit')(X_train, y_train)
+                getattr(model, 'fit')(X_train, y_train, verbose=self.verbose_)
             else:
                 getattr(model, 'fit')(X_train,
                                       y_train,
                                       eval_set=[(X_val, y_val)],
                                       early_stopping_rounds=self.early_stopping_rounds,
-                                      verbose=True)
+                                      verbose=self.verbose_)
 
     def fit(self, X: pd.DataFrame, y: Union[pd.Series, np.ndarray]) -> None:
 
@@ -270,7 +274,10 @@ class Ensemble:
                 # 'weights': weights
                 weights = self.make_weights(n_learners=len(self.learner_), N=self.N_)
                 grid_params = {'weights': weights}
-                grid_Search = GridSearchCV(param_grid=grid_params, estimator=self.final_ensemble, scoring=self.metric_dict[self.type_][self.metric_])
+                grid_Search = GridSearchCV(param_grid=grid_params,
+                                           estimator=self.final_ensemble,
+                                           scoring=self.metric_dict[self.type_][self.metric_],
+                                           verbose=self.verbose_,)
                 grid_Search.fit(X_train, y_train)
                 self.final_ensemble = grid_Search.best_estimator_
             
@@ -314,7 +321,8 @@ class Ensemble:
             scores.append(score)
 
         else:
-            for train_idx, val_idx in folds.split(X, y):
+            print('K-fold cross validation')
+            for train_idx, val_idx in tqdm(folds.split(X, y)):
                 X_train = X.iloc[train_idx, :]
                 y_train = y.iloc[train_idx]
                 
@@ -322,11 +330,12 @@ class Ensemble:
                 y_val = y.iloc[val_idx]
                 
                 self.model_fit(model, learner,
-                           X_train, y_train,
-                           X_val, y_val)
+                               X_train, y_train,
+                               X_val, y_val)
+                
                 score = self.score(y_val, model.predict(X_val))
                 scores.append(score)
-
+            print('#' + '-' * 21 + '#')
         return scores
 
     def objective(self, trial: Trial,
@@ -400,7 +409,7 @@ class BinaryCalssifier(Ensemble):
     """
     metric : F1 score
     """
-    def __init__(self, metric: str='f1_score',
+    def __init__(self, metric: str,
                  objecitve: str='classification',
                  learner: Union[str, List[str]]='auto',
                  ensemble: Optional[str]='voting',
@@ -408,6 +417,7 @@ class BinaryCalssifier(Ensemble):
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
+                 verbose: int=0,
                  n_trials: int=20,
                  cv: int=5,
                  N: int=5,
@@ -417,8 +427,9 @@ class BinaryCalssifier(Ensemble):
                          learner, ensemble,
                          learning_rate, random_state,
                          early_stopping_rounds,
-                         optimize, n_trials,
-                         cv, N, **kwargs)
+                         optimize, verbose,
+                         n_trials, cv,
+                         N, **kwargs)
         
     def __str__(self):
         return 'Binary Classifier'
@@ -436,6 +447,7 @@ class Regressor(Ensemble):
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
+                 verbose: int=0,
                  n_trials: int=20,
                  cv: int=5,
                  N: int=5,
@@ -445,8 +457,9 @@ class Regressor(Ensemble):
                          learner, ensemble,
                          learning_rate, random_state,
                          early_stopping_rounds,
-                         optimize, n_trials,
-                         cv, N, **kwargs)
+                         optimize, verbose,
+                         n_trials, cv,
+                         N, **kwargs)
         
     def __str__(self):
         return 'Regressor'
