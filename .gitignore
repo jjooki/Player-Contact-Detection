@@ -4,6 +4,8 @@
 ### dataset directory ###
 data/
 tutorial/
+open/
+submission/
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks
