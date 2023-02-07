@@ -6,6 +6,7 @@ data/
 tutorial/
 open/
 submission/
+1D-CNN + Transformer.ipynb
 
 ### JupyterNotebooks ###
 # gitignore template for Jupyter Notebooks
