@@ -15,7 +15,9 @@ optuna             2.10.1
 # ---------------------------------------------------------------------------- #
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from typing import Optional, Union, List
+from torch import cuda
 from tqdm import tqdm
 import copy
 import warnings
@@ -28,6 +30,8 @@ from xgboost.sklearn import XGBClassifier
 
 # classification metrics
 from sklearn.metrics import accuracy_score, f1_score, auc
+from sklearn.metrics import classification_report
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 # regression models
 from sklearn.ensemble import RandomForestRegressor, VotingRegressor, StackingRegressor
@@ -62,8 +66,8 @@ class Ensemble:
                  optimize: bool=False,
                  verbose: int=0,
                  n_trials: int=20,
-                 cv: int=5,
-                 N: int=5,
+                 cv: int=3,
+                 N: int=3,
                  **kwargs: any):
         """
         metric : sklearn.metrics 내장함수 활용
@@ -99,9 +103,8 @@ class Ensemble:
                             self.learner_ = learner
                         else:
                             self.learner_ = ['rf', 'xgb', 'lgbm'] if learner == 'auto' else [learner]
-
         
-        self.final_ensemble = None        # Final Ensemble model
+        self.final_ensemble = None        # Final Ensemble 
         self.models = {
             'rf': None,
             'xgb': None,
@@ -159,15 +162,17 @@ class Ensemble:
             'xgb' : {'learning_rate': self.learning_rate,
                      'nthread' : -1,
                      'n_jobs': -1,
-                     'tree_method': 'gpu_hist',
-                     'predictor': 'gpu_predictor',
+                     'tree_method': 'auto',
+                     'predictor': 'auto',
                      'random_state': self.random_state},
             
             'lgbm' : {'learning_rate': self.learning_rate,
                       'n_jobs': -1,
                       'random_state': self.random_state}
         }
-
+        if cuda.is_available():
+            self.param['xgb']['tree_method'] = 'gpu_hist'
+            
         # self.learners[self.type_][self.learner_]
         self.learners = {
             'classification' : {
@@ -218,22 +223,20 @@ class Ensemble:
     def model_fit(self, model: callable,
                   learner: str,
                   X_train: pd.DataFrame, 
-                  y_train: Union[pd.Series, pd.DataFrame, np.ndarray],
-                  X_val: Optional[pd.DataFrame],
-                  y_val: Optional[Union[pd.Series, pd.DataFrame, np.ndarray]]) -> None:
+                  y_train: Union[pd.Series, pd.DataFrame, np.ndarray]) -> None:
             
             if learner == 'rf':
                 getattr(model, 'fit')(X_train, y_train, verbose=self.verbose_)
             else:
                 getattr(model, 'fit')(X_train,
                                       y_train,
-                                      eval_set=[(X_val, y_val)],
                                       early_stopping_rounds=self.early_stopping_rounds,
                                       verbose=self.verbose_)
 
     def fit(self, X: pd.DataFrame, y: Union[pd.Series, np.ndarray]) -> None:
 
-        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=self.random_state)
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2,
+                                                          random_state=self.random_state)
 
         for learner in self.learner_:
             if self.optimize_:
@@ -249,42 +252,43 @@ class Ensemble:
         if len(self.learner_) < 2:
             self.final_ensemble = self.models[self.learner_[0]]
             self.model_fit(self.final_ensemble, self.learner_[0],
-                           X_train, y_train,
-                           X_val, y_val)
+                           X_train, y_train)
         # Else if, fit ensemble model
         else:
             estimators = [(learner, self.models[learner]) for learner in self.learner_]
 
             ensemble_param = {
                 'estimators': estimators,
-                'n_jobs': -1
+                'n_jobs': 1
             }
 
             if self.ensemble_ == 'voting':
                 if self.type_ == 'classification':
-                    ensemble_param.update({'voting': 'soft'})
+                    ensemble_param.update({'voting': 'hard'})
 
             elif self.ensemble_ == 'stacking':
-                ensemble_param.update({'cv': self.cv_,
-                                       'final_estimator': self.learners[self.type_]['lgbm']()})
+                ensemble_param.update({'cv': self.cv_})
             
             self.final_ensemble = self.voters[self.type_][self.ensemble_](**ensemble_param)
 
-            if self.optimize_ and (self.ensemble_ == 'voting'):
-                # 'weights': weights
-                weights = self.make_weights(n_learners=len(self.learner_), N=self.N_)
-                grid_params = {'weights': weights}
-                grid_Search = GridSearchCV(param_grid=grid_params,
-                                           estimator=self.final_ensemble,
-                                           scoring=self.metric_dict[self.type_][self.metric_],
-                                           verbose=self.verbose_,)
-                grid_Search.fit(X_train, y_train)
-                self.final_ensemble = grid_Search.best_estimator_
+#             if self.optimize_ and (self.ensemble_ == 'voting'):
+#                 # 'weights': weights
+#                 weights = self.make_weights(n_learners=len(self.learner_), N=self.N_)
+#                 grid_params = {'weights': weights}
+#                 grid_Search = GridSearchCV(param_grid=grid_params,
+#                                            estimator=self.final_ensemble,
+#                                            scoring=self.metric_dict[self.type_][self.metric_],
+#                                            verbose=self.verbose_)
+#                 grid_Search.fit(X_train, y_train)
+#                 self.final_ensemble = grid_Search.best_estimator_
             
             getattr(self.final_ensemble, 'fit')(X_train, y_train)
 
     def predict(self, X_test: pd.DataFrame) -> np.ndarray:
         return getattr(self.final_ensemble, 'predict')(X_test)
+    
+    def predict_proba(self, X_test: pd.DataFrame) -> np.ndarray:
+        return getattr(self.final_ensemble, 'predict_proba')(X_test)
 
     def score(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
         if '_f1_score' in self.metric_:
@@ -315,8 +319,7 @@ class Ensemble:
         if cv == 1:
             X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=self.random_state)
             self.model_fit(model, learner,
-                           X_train, y_train,
-                           X_val, y_val)
+                           X_train, y_train)
             score = self.score(y_val, model.predict(X_val))
             scores.append(score)
 
@@ -330,8 +333,7 @@ class Ensemble:
                 y_val = y.iloc[val_idx]
                 
                 self.model_fit(model, learner,
-                               X_train, y_train,
-                               X_val, y_val)
+                               X_train, y_train)
                 
                 score = self.score(y_val, model.predict(X_val))
                 scores.append(score)
@@ -418,9 +420,9 @@ class BinaryCalssifier(Ensemble):
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
                  verbose: int=0,
-                 n_trials: int=20,
-                 cv: int=5,
-                 N: int=5,
+                 n_trials: int=30,
+                 cv: int=3,
+                 N: int=3,
                  **kwargs: any):
 
         super().__init__(metric, objecitve,
@@ -430,9 +432,22 @@ class BinaryCalssifier(Ensemble):
                          optimize, verbose,
                          n_trials, cv,
                          N, **kwargs)
+    def plot_report(self, y_true, y_pred):
+        cm = confusion_matrix(y_true, y_pred, labels=self.final_ensemble.classes_)
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm,
+                                      display_labels=self.final_ensemble.classes_)
+        disp.plot()
+        plt.show()
+    
+    def print_report(self, y_true, y_pred):
+        print('#' + '-'*50 + '#')
+        print(classification_report(y_true, y_pred))
+        print('-'*52)
+        print(f'{self.metric_} score : {self.score(y_true, y_pred)}')
+        print('#' + '-'*50 + '#')
         
     def __str__(self):
-        return 'Binary Classifier'
+        return 'BinaryClassifier'
 
 class Regressor(Ensemble):
     # Child Class
@@ -442,7 +457,7 @@ class Regressor(Ensemble):
     def __init__(self, metric: str='r2_score',
                  objecitve: str='regression',
                  learner: Union[str, List[str]]='auto',
-                 ensemble: Optional[str]='voting',
+                 ensemble: Optional[str]='stacking',
                  learning_rate: Optional[float]=0.005,
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
