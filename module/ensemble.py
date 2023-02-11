@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------- #
-#                 Make Model Pipeline for the multiple tests                   #
+#             Make Ensemble Model Pipeline for the multiple tests              #
 # ---------------------------------------------------------------------------- #
 """
 <Module Version>
@@ -64,6 +64,7 @@ class Ensemble:
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
+                 weight_optimize: bool=False,
                  verbose: int=0,
                  n_trials: int=20,
                  cv: int=3,
@@ -89,6 +90,7 @@ class Ensemble:
         self.random_state = random_state
         self.early_stopping_rounds = early_stopping_rounds
         self.optimize_ = optimize
+        self.weight_optimize_ = weight_optimize
         self.verbose_ = verbose
         self.n_trials_ = n_trials
         self.cv_ = cv
@@ -157,6 +159,7 @@ class Ensemble:
         # self.param[self.learner_]
         self.param = {
             'rf' : {'n_jobs': -1,
+                    'verbose': self.verbose_,
                     'random_state': self.random_state},
             
             'xgb' : {'learning_rate': self.learning_rate,
@@ -170,8 +173,10 @@ class Ensemble:
                       'n_jobs': -1,
                       'random_state': self.random_state}
         }
+        # Decide GPU usage if cuda is available or not
         if cuda.is_available():
             self.param['xgb']['tree_method'] = 'gpu_hist'
+            self.param['lgbm']['device'] = 'gpu'
             
         # self.learners[self.type_][self.learner_]
         self.learners = {
@@ -223,13 +228,16 @@ class Ensemble:
     def model_fit(self, model: callable,
                   learner: str,
                   X_train: pd.DataFrame, 
-                  y_train: Union[pd.Series, pd.DataFrame, np.ndarray]) -> None:
+                  y_train: Union[pd.Series, pd.DataFrame, np.ndarray],
+                  X_val: pd.DataFrame, 
+                  y_val: Union[pd.Series, pd.DataFrame, np.ndarray]) -> None:
             
             if learner == 'rf':
-                getattr(model, 'fit')(X_train, y_train, verbose=self.verbose_)
+                getattr(model, 'fit')(X_train, y_train)
             else:
                 getattr(model, 'fit')(X_train,
                                       y_train,
+                                      eval_set=[(X_val, y_val)],
                                       early_stopping_rounds=self.early_stopping_rounds,
                                       verbose=self.verbose_)
 
@@ -252,7 +260,9 @@ class Ensemble:
         if len(self.learner_) < 2:
             self.final_ensemble = self.models[self.learner_[0]]
             self.model_fit(self.final_ensemble, self.learner_[0],
-                           X_train, y_train)
+                           X_train, y_train,
+                           X_val, y_val)
+        
         # Else if, fit ensemble model
         else:
             estimators = [(learner, self.models[learner]) for learner in self.learner_]
@@ -271,16 +281,16 @@ class Ensemble:
             
             self.final_ensemble = self.voters[self.type_][self.ensemble_](**ensemble_param)
 
-#             if self.optimize_ and (self.ensemble_ == 'voting'):
-#                 # 'weights': weights
-#                 weights = self.make_weights(n_learners=len(self.learner_), N=self.N_)
-#                 grid_params = {'weights': weights}
-#                 grid_Search = GridSearchCV(param_grid=grid_params,
-#                                            estimator=self.final_ensemble,
-#                                            scoring=self.metric_dict[self.type_][self.metric_],
-#                                            verbose=self.verbose_)
-#                 grid_Search.fit(X_train, y_train)
-#                 self.final_ensemble = grid_Search.best_estimator_
+            if self.weight_optimize_ and (self.ensemble_ == 'voting'):
+                # 'weights': weights
+                weights = self.make_weights(n_learners=len(self.learner_), N=self.N_)
+                grid_params = {'weights': weights}
+                grid_Search = GridSearchCV(param_grid=grid_params,
+                                           estimator=self.final_ensemble,
+                                           scoring=self.metric_dict[self.type_][self.metric_],
+                                           verbose=self.verbose_)
+                grid_Search.fit(X_train, y_train)
+                self.final_ensemble = grid_Search.best_estimator_
             
             getattr(self.final_ensemble, 'fit')(X_train, y_train)
 
@@ -319,7 +329,8 @@ class Ensemble:
         if cv == 1:
             X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=self.random_state)
             self.model_fit(model, learner,
-                           X_train, y_train)
+                           X_train, y_train,
+                           X_val, y_val)
             score = self.score(y_val, model.predict(X_val))
             scores.append(score)
 
@@ -333,7 +344,8 @@ class Ensemble:
                 y_val = y.iloc[val_idx]
                 
                 self.model_fit(model, learner,
-                               X_train, y_train)
+                               X_train, y_train,
+                               X_val, y_val)
                 
                 score = self.score(y_val, model.predict(X_val))
                 scores.append(score)
@@ -403,8 +415,33 @@ class Ensemble:
         study = optuna.create_study(direction=direction, sampler=TPESampler())
         study.optimize(lambda trial : self.objective(trial, X, y, learner, cv),
                        n_trials=n_trials)
+        
         print('Best trial: score {},\nparams: {}'.format(study.best_trial.value, study.best_trial.params))
+        
+        if self.is_notebook():
+            try:
+                #plot_optimization_histor: shows the scores from all trials as well as the best score so far at each point.
+                optuna.visualization.plot_optimization_history(study)
+
+                #Visualize parameter importances.
+                optuna.visualization.plot_param_importances(study)
+            except Exception as e:
+                print(f"{e}: Cannot plot the history and param importances")
         return study.best_trial.params
+    
+    def is_notebook(self):
+        try:
+            shell = get_ipython().__class__.__name__
+            if shell == 'ZMQInteractiveShell':
+                return True   # Jupyter notebook or qtconsole
+            elif shell == 'Shell':
+                return True   # Jupyter notebook or qtconsole
+            elif shell == 'TerminalInteractiveShell':
+                return False  # Terminal running IPython
+            else:
+                return False  # Other type (?)
+        except NameError:
+            return False      # Probably standard Python interpreter
 
 class BinaryCalssifier(Ensemble):
     # Child Class
@@ -419,6 +456,7 @@ class BinaryCalssifier(Ensemble):
                  random_state: Optional[int]=42,
                  early_stopping_rounds: Optional[int]=10,
                  optimize: bool=False,
+                 weight_optimize: bool=False,
                  verbose: int=0,
                  n_trials: int=30,
                  cv: int=3,
@@ -429,9 +467,11 @@ class BinaryCalssifier(Ensemble):
                          learner, ensemble,
                          learning_rate, random_state,
                          early_stopping_rounds,
-                         optimize, verbose,
-                         n_trials, cv,
-                         N, **kwargs)
+                         optimize, weight_optimize,
+                         verbose, n_trials,
+                         cv, N,
+                         **kwargs)
+    
     def plot_report(self, y_true, y_pred):
         cm = confusion_matrix(y_true, y_pred, labels=self.final_ensemble.classes_)
         disp = ConfusionMatrixDisplay(confusion_matrix=cm,
@@ -448,33 +488,3 @@ class BinaryCalssifier(Ensemble):
         
     def __str__(self):
         return 'BinaryClassifier'
-
-class Regressor(Ensemble):
-    # Child Class
-    """
-    metric : R-squared score
-    """
-    def __init__(self, metric: str='r2_score',
-                 objecitve: str='regression',
-                 learner: Union[str, List[str]]='auto',
-                 ensemble: Optional[str]='stacking',
-                 learning_rate: Optional[float]=0.005,
-                 random_state: Optional[int]=42,
-                 early_stopping_rounds: Optional[int]=10,
-                 optimize: bool=False,
-                 verbose: int=0,
-                 n_trials: int=20,
-                 cv: int=5,
-                 N: int=5,
-                 **kwargs: any):
-
-        super().__init__(metric, objecitve,
-                         learner, ensemble,
-                         learning_rate, random_state,
-                         early_stopping_rounds,
-                         optimize, verbose,
-                         n_trials, cv,
-                         N, **kwargs)
-        
-    def __str__(self):
-        return 'Regressor'
